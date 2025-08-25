@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   SafeAreaView,
   ScrollView,
@@ -10,76 +10,224 @@ import {
   Dimensions,
   StatusBar,
   Platform,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
+import CreatePostModal from '../components/CreatePostModal';
+import PostDetailModal from '../components/PostDetailModal';
+
+
 
 const { width } = Dimensions.get('window');
 
 const ForumsScreen = () => {
   const [activeCategory, setActiveCategory] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isCreatePostModalVisible, setIsCreatePostModalVisible] = useState(false);
+  const [isPostDetailModalVisible, setIsPostDetailModalVisible] = useState(false);
+  const [selectedPost, setSelectedPost] = useState<any>(null);
+  const [forumPosts, setForumPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({
+    totalPosts: 0,
+    totalViews: 0,
+    answerRate: 0,
+  });
 
-  const forumPosts = [
-    {
-      id: 1,
-      title: 'Property boundary dispute - neighbor built fence 3 feet onto my land, need urgent legal advice on property survey discrepancies',
-      author: 'Anonymous User',
-      replies: 24,
-      views: 156,
-      lastActivity: '2 hours ago',
-      category: 'Property Law',
-      isAnswered: true,
-      priority: 'high',
-      tags: ['property', 'dispute', 'neighbor'],
-    },
-    {
-      id: 2,
-      title: 'Wrongful termination after 5 years - employer claims performance issues but I have evidence of discrimination based on age',
-      author: 'Legal Seeker',
-      replies: 18,
-      views: 89,
-      lastActivity: '4 hours ago',
-      category: 'Employment Law',
-      isAnswered: true,
-      priority: 'medium',
-      tags: ['employment', 'contract', 'termination'],
-    },
-    {
-      id: 3,
-      title: 'Ex-spouse violating custody agreement - taking children out of state without permission, need emergency court intervention',
-      author: 'Concerned Parent',
-      replies: 31,
-      views: 203,
-      lastActivity: '6 hours ago',
-      category: 'Family Law',
-      isAnswered: false,
-      priority: 'high',
-      tags: ['family', 'custody', 'divorce'],
-    },
-    {
-      id: 4,
-      title: 'Contractor damaged my driveway during work - $3,500 in damages, they refuse to pay, how to file small claims court case',
-      author: 'First Timer',
-      replies: 12,
-      views: 67,
-      lastActivity: '1 day ago',
-      category: 'Civil Law',
-      isAnswered: true,
-      priority: 'low',
-      tags: ['civil', 'claims', 'court'],
-    },
-    {
-      id: 5,
-      title: 'Landlord keeping $2,000 security deposit claiming "excessive wear" but apartment was in good condition when I moved out',
-      author: 'Tenant Rights',
-      replies: 8,
-      views: 45,
-      lastActivity: '2 days ago',
-      category: 'Property Law',
-      isAnswered: false,
-      priority: 'medium',
-      tags: ['tenant', 'deposit', 'landlord'],
-    },
-  ];
+  // Multiple URL options for different environments
+  const API_URLS = Platform.OS === 'android' 
+    ? [
+        'http://10.0.2.2:3000/api',     // Android emulator
+        'http://10.4.2.1:3000/api',    // Your computer's IP
+        'http://localhost:3000/api',    // Fallback
+      ]
+    : [
+        'http://10.4.2.1:3000/api',    // Your computer's IP
+        'http://localhost:3000/api',    // iOS simulator
+      ];
+
+  const [currentApiIndex, setCurrentApiIndex] = useState(0);
+  const BASE_URL = API_URLS[currentApiIndex];
+
+  // Try different API URLs if current one fails
+  const tryNextApiUrl = () => {
+    const nextIndex = (currentApiIndex + 1) % API_URLS.length;
+    console.log(`Trying next API URL: ${API_URLS[nextIndex]}`);
+    setCurrentApiIndex(nextIndex);
+    return nextIndex !== currentApiIndex; // Return false if we've tried all URLs
+  };
+
+  // API Functions
+  const fetchPosts = async () => {
+    try {
+      setLoading(true);
+      console.log('Fetching posts from:', `${BASE_URL}/posts`);
+      
+      const response = await fetch(`${BASE_URL}/posts?category=${activeCategory}&search=${searchQuery}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000, // 10 second timeout
+      });
+      
+      console.log('Response status:', response.status);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('Response data:', data);
+      
+      if (data.success) {
+        // Transform backend data to match frontend format
+        const transformedPosts = data.data.posts.map((post: any) => ({
+          id: post._id,
+          title: post.title,
+          author: post.author,
+          replies: post.replies,
+          views: post.views,
+          lastActivity: formatLastActivity(post.lastActivity),
+          category: post.category,
+          isAnswered: post.isAnswered,
+          priority: post.priority,
+          tags: post.tags,
+        }));
+        setForumPosts(transformedPosts);
+      } else {
+        throw new Error(data.message || 'Failed to fetch posts');
+      }
+    } catch (error) {
+      console.error('Error fetching posts:', error);
+      
+      // Try next API URL if available
+      if (tryNextApiUrl()) {
+        console.log('Trying next API URL...');
+        // Retry with next URL
+        return fetchPosts();
+      }
+      
+      // All URLs failed, show error
+      Alert.alert(
+        'Connection Error', 
+        `Failed to load forum posts. Please check if the backend server is running.\n\nTried URLs: ${API_URLS.join(', ')}\n\nError: ${error.message}`,
+        [
+          { text: 'Retry', onPress: () => {
+            setCurrentApiIndex(0); // Reset to first URL
+            fetchPosts();
+          }},
+          { text: 'OK' }
+        ]
+      );
+      // Set empty array on error so UI doesn't break
+      setForumPosts([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchStats = async () => {
+    try {
+      console.log('Fetching stats from:', `${BASE_URL}/posts/stats`);
+      
+      const response = await fetch(`${BASE_URL}/posts/stats`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('Stats response:', data);
+      
+      if (data.success) {
+        setStats({
+          totalPosts: data.data.totalPosts || 0,
+          totalViews: data.data.totalViews || 0,
+          answerRate: data.data.answerRate || 0,
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching stats:', error);
+      // Don't show alert for stats errors, just use default values
+      setStats({
+        totalPosts: 0,
+        totalViews: 0,
+        answerRate: 0,
+      });
+    }
+  };
+
+  const createPost = async (postData: any) => {
+    try {
+      console.log('Creating post:', postData);
+      console.log('POST URL:', `${BASE_URL}/posts`);
+      
+      const response = await fetch(`${BASE_URL}/posts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(postData),
+      });
+      
+      console.log('Create post response status:', response.status);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Create post error response:', errorText);
+        throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+      }
+      
+      const data = await response.json();
+      console.log('Create post response data:', data);
+      
+      if (data.success) {
+        Alert.alert('Success', 'Your post has been created successfully!');
+        fetchPosts(); // Refresh the posts list
+        fetchStats(); // Refresh stats
+      } else {
+        Alert.alert('Error', data.message || 'Failed to create post');
+      }
+    } catch (error) {
+      console.error('Error creating post:', error);
+      Alert.alert(
+        'Post Creation Failed', 
+        `Failed to create post. Please check your connection and try again.\n\nError: ${error.message}`,
+        [
+          { text: 'Retry', onPress: () => createPost(postData) },
+          { text: 'OK' }
+        ]
+      );
+    }
+  };
+
+  const formatLastActivity = (dateString: string) => {
+    const now = new Date();
+    const activityDate = new Date(dateString);
+    const diffInHours = Math.floor((now.getTime() - activityDate.getTime()) / (1000 * 60 * 60));
+    const diffInDays = Math.floor(diffInHours / 24);
+    
+    if (diffInDays > 0) {
+      return `${diffInDays} day${diffInDays > 1 ? 's' : ''} ago`;
+    } else if (diffInHours > 0) {
+      return `${diffInHours} hour${diffInHours > 1 ? 's' : ''} ago`;
+    } else {
+      return 'Just now';
+    }
+  };
+
+  // Effects
+  useEffect(() => {
+    fetchPosts();
+    fetchStats();
+  }, [activeCategory, searchQuery]);
 
   const categories = [
     { id: 1, name: 'All', count: 93, icon: '📋' },
@@ -104,6 +252,51 @@ const ForumsScreen = () => {
     return matchesCategory && matchesSearch;
   });
 
+  const handleCreatePost = (postData: any) => {
+    createPost(postData);
+  };
+
+  const openCreatePostModal = () => {
+    setIsCreatePostModalVisible(true);
+  };
+
+  const closeCreatePostModal = () => {
+    setIsCreatePostModalVisible(false);
+  };
+
+  const handlePostPress = async (postId: string) => {
+    try {
+      setLoading(true);
+      console.log('Fetching post details for ID:', postId);
+      
+      const response = await fetch(`${BASE_URL}/posts/${postId}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        setSelectedPost(data.data);
+        setIsPostDetailModalVisible(true);
+      } else {
+        throw new Error(data.message || 'Failed to fetch post details');
+      }
+    } catch (error) {
+      console.error('Error fetching post details:', error);
+      Alert.alert('Error', `Failed to load post details: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -114,45 +307,30 @@ const ForumsScreen = () => {
             <Text style={styles.headerSubtitle}>Connect • Ask • Learn • Grow</Text>
             <View style={styles.statsContainer}>
               <View style={styles.statItem}>
-                <Text style={styles.statNumber}>2.4k</Text>
-                <Text style={styles.statLabel}>Active Users</Text>
+                <Text style={styles.statNumber}>{stats.totalPosts}</Text>
+                <Text style={styles.statLabel}>Total Posts</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
-                <Text style={styles.statNumber}>156</Text>
-                <Text style={styles.statLabel}>Questions Today</Text>
+                <Text style={styles.statNumber}>{stats.totalViews}</Text>
+                <Text style={styles.statLabel}>Total Views</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
-                <Text style={styles.statNumber}>89%</Text>
+                <Text style={styles.statNumber}>{stats.answerRate}%</Text>
                 <Text style={styles.statLabel}>Answered</Text>
               </View>
             </View>
           </View>
         </View>
 
-        {/* Enhanced Search Bar */}
-        <View style={styles.searchSection}>
-          <View style={styles.searchContainer}>
-            <Text style={styles.searchIcon}>🔍</Text>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search questions, topics, or keywords..."
-              placeholderTextColor="#8E8E93"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-            />
-            {searchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Text style={styles.clearIcon}>✕</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-
         {/* Quick Action Cards */}
         <View style={styles.quickActionsSection}>
-          <TouchableOpacity style={styles.askQuestionCard}>
+          <TouchableOpacity 
+            style={styles.askQuestionCard} 
+            onPress={openCreatePostModal}
+            activeOpacity={0.8}
+          >
             <View style={styles.askQuestionIcon}>
               <Text style={styles.askQuestionEmoji}>💭</Text>
             </View>
@@ -163,7 +341,10 @@ const ForumsScreen = () => {
             <Text style={styles.askQuestionArrow}>→</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.browseCard}>
+          <TouchableOpacity 
+            style={styles.browseCard}
+            activeOpacity={0.8}
+          >
             <View style={styles.browseIcon}>
               <Text style={styles.browseEmoji}>📚</Text>
             </View>
@@ -219,6 +400,25 @@ const ForumsScreen = () => {
           </ScrollView>
         </View>
 
+        {/* Enhanced Search Bar */}
+        <View style={styles.searchSection}>
+          <View style={styles.searchContainer}>
+            <Text style={styles.searchIcon}>🔍</Text>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search questions, topics, or keywords..."
+              placeholderTextColor="#8E8E93"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery('')}>
+                <Text style={styles.clearIcon}>✕</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+
         {/* Forum Posts with Enhanced Design */}
         <View style={styles.postsSection}>
           <View style={styles.sectionHeader}>
@@ -231,8 +431,24 @@ const ForumsScreen = () => {
             </View>
           </View>
 
-          {filteredPosts.map((post) => (
-            <TouchableOpacity key={post.id} style={styles.postCard}>
+          {loading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#667eea" />
+              <Text style={styles.loadingText}>Loading posts...</Text>
+            </View>
+          ) : filteredPosts.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>No posts found</Text>
+              <Text style={styles.emptySubtext}>Be the first to ask a question!</Text>
+            </View>
+          ) : (
+            filteredPosts.map((post) => (
+            <TouchableOpacity 
+              key={post.id} 
+              style={styles.postCard}
+              onPress={() => handlePostPress(post.id)}
+              activeOpacity={0.8}
+            >
               {/* Priority Indicator */}
               <View style={styles.postPriorityIndicator}>
                 <View style={[
@@ -282,17 +498,29 @@ const ForumsScreen = () => {
                 </View>
               </View>
             </TouchableOpacity>
-          ))}
+            ))
+          )}
         </View>
 
         {/* Bottom Spacing */}
         <View style={styles.bottomSpacing} />
       </ScrollView>
 
-      {/* Enhanced Floating Action Button */}
-      <TouchableOpacity style={styles.fab}>
-        <Text style={styles.fabIcon}>✏️</Text>
-      </TouchableOpacity>
+
+
+      {/* Create Post Modal */}
+      <CreatePostModal
+        visible={isCreatePostModalVisible}
+        onClose={closeCreatePostModal}
+        onSubmit={handleCreatePost}
+      />
+
+      {/* Post Detail Modal */}
+      <PostDetailModal
+        visible={isPostDetailModalVisible}
+        post={selectedPost}
+        onClose={() => setIsPostDetailModalVisible(false)}
+      />
     </SafeAreaView>
   );
 };
@@ -738,29 +966,38 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#BDC3C7',
   },
-  // FAB
-  fab: {
-    position: 'absolute',
-    bottom: 30,
-    right: 20,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#667eea',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#667eea',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 10,
-  },
-  fabIcon: {
-    fontSize: 24,
-    color: '#FFFFFF',
-  },
   bottomSpacing: {
     height: 100,
+  },
+  // Loading and Empty States
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 50,
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#7F8C8D',
+    marginTop: 10,
+    fontWeight: '500',
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 50,
+  },
+  emptyText: {
+    fontSize: 18,
+    color: '#2C3E50',
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#7F8C8D',
+    textAlign: 'center',
   },
 });
 
